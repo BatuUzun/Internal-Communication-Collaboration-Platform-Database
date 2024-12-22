@@ -1,0 +1,95 @@
+CREATE DATABASE user_database;
+
+USE user_database;
+
+-- Create the user table
+CREATE TABLE user (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    email VARCHAR(320) NOT NULL UNIQUE,
+    password BINARY(40) NOT NULL,
+    is_verified TINYINT(1) DEFAULT 0,
+    creation_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
+);
+
+-- Create the files_profile_picture table
+CREATE TABLE files_profile_picture (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    file_name VARCHAR(36) NOT NULL CHECK (CHAR_LENGTH(file_name) = 36), -- Ensures file_name is exactly 36 characters
+    file_type ENUM('png', 'jpeg', 'jpg') NOT NULL,
+    creation_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
+);
+
+INSERT INTO files_profile_picture (file_name, file_type, creation_date)
+VALUES ('00000000-0000-0000-0000-000000000000', 'png', NOW());
+
+
+
+-- Create the user_profile table
+CREATE TABLE user_profile (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(50) NOT NULL,
+    surname VARCHAR(50) NOT NULL,
+    profile_picture_id BIGINT UNSIGNED DEFAULT 1,
+    birthdate DATE, -- Birthday validation will be handled by triggers
+    user_id BIGINT UNSIGNED NOT NULL,
+    creation_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES user(id) ON DELETE CASCADE, -- Cascade deletion
+    FOREIGN KEY (profile_picture_id) REFERENCES files_profile_picture(id) ON DELETE SET NULL -- Set profile picture to NULL if deleted
+);
+
+
+
+-- Create the tokens table
+CREATE TABLE tokens (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    token BINARY(32) NOT NULL UNIQUE,
+    user_id BIGINT UNSIGNED NOT NULL,
+    expiry_date TIMESTAMP NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES user(id) ON DELETE CASCADE -- Cascade deletion
+);
+
+
+
+CREATE INDEX idx_user_id ON user_profile(user_id);
+CREATE INDEX idx_profile_picture_id ON user_profile(profile_picture_id);
+CREATE INDEX idx_user_id_tokens ON tokens(user_id);
+CREATE INDEX idx_token ON tokens(token);
+
+CREATE EVENT cleanup_expired_tokens
+ON SCHEDULE EVERY 1 HOUR
+DO
+DELETE FROM tokens WHERE expiry_date <= NOW();
+
+DELIMITER //
+
+CREATE TRIGGER prevent_default_profile_picture_deletion
+BEFORE DELETE ON files_profile_picture
+FOR EACH ROW
+BEGIN
+    IF OLD.file_name = '00000000-0000-0000-0000-000000000000' THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'Cannot delete the default profile picture.';
+    END IF;
+END //
+
+CREATE TRIGGER validate_birthdate
+BEFORE INSERT ON user_profile
+FOR EACH ROW
+BEGIN
+    IF NEW.birthdate > CURDATE() THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'Birthdate cannot be in the future.';
+    END IF;
+END //
+
+CREATE TRIGGER validate_birthdate_update
+BEFORE UPDATE ON user_profile
+FOR EACH ROW
+BEGIN
+    IF NEW.birthdate > CURDATE() THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'Birthdate cannot be in the future.';
+    END IF;
+END //
+
+DELIMITER ;
