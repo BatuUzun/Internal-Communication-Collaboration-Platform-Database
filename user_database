@@ -2,13 +2,17 @@ CREATE DATABASE user_database;
 
 USE user_database;
 
+-- Ensure the server is configured to UTC
+SET GLOBAL time_zone = '+00:00';
+SET SESSION time_zone = '+00:00';
+
 -- Create the user table
 CREATE TABLE user (
     id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     email VARCHAR(320) NOT NULL UNIQUE,
-    password BINARY(40) NOT NULL,
+    password VARBINARY(60) NOT NULL,
     is_verified TINYINT(1) DEFAULT 0,
-    creation_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
+    creation_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL -- Stored in UTC
 );
 
 -- Create the files_profile_picture table
@@ -16,13 +20,12 @@ CREATE TABLE files_profile_picture (
     id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     file_name VARCHAR(36) NOT NULL CHECK (CHAR_LENGTH(file_name) = 36), -- Ensures file_name is exactly 36 characters
     file_type ENUM('png', 'jpeg', 'jpg') NOT NULL,
-    creation_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
+    creation_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL -- Stored in UTC
 );
 
+-- Insert default profile picture with UTC timestamp
 INSERT INTO files_profile_picture (file_name, file_type, creation_date)
-VALUES ('00000000-0000-0000-0000-000000000000', 'png', NOW());
-
-
+VALUES ('00000000-0000-0000-0000-000000000000', 'png', UTC_TIMESTAMP());
 
 -- Create the user_profile table
 CREATE TABLE user_profile (
@@ -32,36 +35,48 @@ CREATE TABLE user_profile (
     profile_picture_id BIGINT UNSIGNED DEFAULT 1,
     birthdate DATE, -- Birthday validation will be handled by triggers
     user_id BIGINT UNSIGNED NOT NULL,
-    creation_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    creation_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL, -- Stored in UTC
     FOREIGN KEY (user_id) REFERENCES user(id) ON DELETE CASCADE, -- Cascade deletion
     FOREIGN KEY (profile_picture_id) REFERENCES files_profile_picture(id) ON DELETE SET NULL -- Set profile picture to NULL if deleted
 );
 
-
-
 -- Create the tokens table
 CREATE TABLE tokens (
     id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-    token BINARY(32) NOT NULL UNIQUE,
+    token BINARY(16) NOT NULL UNIQUE,
     user_id BIGINT UNSIGNED NOT NULL,
-    expiry_date TIMESTAMP NOT NULL,
+    expiry_date TIMESTAMP NOT NULL, -- Stored in UTC
     FOREIGN KEY (user_id) REFERENCES user(id) ON DELETE CASCADE -- Cascade deletion
 );
 
+-- Create the verification_codes table
+CREATE TABLE verification_codes (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY, -- Auto-incrementing primary key
+    user_id BIGINT UNSIGNED NOT NULL,              -- Foreign key to associate with the user
+    verification_code VARCHAR(6) NOT NULL,         -- Fixed-length 6-character verification code
+    expiration_time TIMESTAMP NOT NULL,            -- Expiration timestamp stored in UTC
+    request_type ENUM('CHANGE', 'RESET', 'VERIFY') NOT NULL, -- Type of request
+    status ENUM('PENDING', 'USED') DEFAULT 'pending', -- Status of the verification code
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, -- Timestamp for when the record was created in UTC
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, -- Timestamp for when the record was last updated
+    FOREIGN KEY (user_id) REFERENCES user(id) ON DELETE CASCADE -- Foreign key constraint
+);
 
-
+-- Create indexes for optimization
 CREATE INDEX idx_user_id ON user_profile(user_id);
 CREATE INDEX idx_profile_picture_id ON user_profile(profile_picture_id);
 CREATE INDEX idx_user_id_tokens ON tokens(user_id);
 CREATE INDEX idx_token ON tokens(token);
 
+-- Create a cleanup event to delete expired tokens
 CREATE EVENT cleanup_expired_tokens
 ON SCHEDULE EVERY 1 HOUR
 DO
-DELETE FROM tokens WHERE expiry_date <= NOW();
+DELETE FROM tokens WHERE expiry_date <= UTC_TIMESTAMP();
 
 DELIMITER //
 
+-- Prevent deletion of the default profile picture
 CREATE TRIGGER prevent_default_profile_picture_deletion
 BEFORE DELETE ON files_profile_picture
 FOR EACH ROW
@@ -72,6 +87,7 @@ BEGIN
     END IF;
 END //
 
+-- Validate birthdate on insert
 CREATE TRIGGER validate_birthdate
 BEFORE INSERT ON user_profile
 FOR EACH ROW
@@ -82,6 +98,7 @@ BEGIN
     END IF;
 END //
 
+-- Validate birthdate on update
 CREATE TRIGGER validate_birthdate_update
 BEFORE UPDATE ON user_profile
 FOR EACH ROW
@@ -93,3 +110,46 @@ BEGIN
 END //
 
 DELIMITER ;
+
+
+DELIMITER //
+
+CREATE TRIGGER before_insert_verification_codes
+BEFORE INSERT ON verification_codes
+FOR EACH ROW
+BEGIN
+    IF NEW.status = 'PENDING' THEN
+        IF EXISTS (
+            SELECT 1
+            FROM verification_codes
+            WHERE user_id = NEW.user_id
+              AND request_type = NEW.request_type
+              AND status = 'PENDING'
+        ) THEN
+            SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = 'Only one PENDING code is allowed per user and request type.';
+        END IF;
+    END IF;
+END //
+
+CREATE TRIGGER before_update_verification_codes
+BEFORE UPDATE ON verification_codes
+FOR EACH ROW
+BEGIN
+    IF NEW.status = 'PENDING' THEN
+        IF EXISTS (
+            SELECT 1
+            FROM verification_codes
+            WHERE user_id = NEW.user_id
+              AND request_type = NEW.request_type
+              AND status = 'PENDING'
+              AND id != NEW.id
+        ) THEN
+            SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = 'Only one PENDING code is allowed per user and request type.';
+        END IF;
+    END IF;
+END //
+
+DELIMITER ;
+
