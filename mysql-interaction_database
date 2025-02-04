@@ -1,4 +1,4 @@
-create database interaction_database
+create database interaction_database;
 use interaction_database;
 
 CREATE TABLE conversations (
