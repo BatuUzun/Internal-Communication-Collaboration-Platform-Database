@@ -1,0 +1,25 @@
+create database interaction_database
+use interaction_database;
+
+CREATE TABLE user_relationships (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    user1 BIGINT UNSIGNED NOT NULL,
+    user2 BIGINT UNSIGNED NOT NULL,
+    CONSTRAINT unique_user_pair UNIQUE (user1, user2)
+);
+
+DELIMITER $$
+
+CREATE TRIGGER before_insert_user_relationships
+BEFORE INSERT ON user_relationships
+FOR EACH ROW
+BEGIN
+    IF NEW.user1 > NEW.user2 THEN
+        -- Swap user1 and user2 to ensure order
+        SET @temp = NEW.user1;
+        SET NEW.user1 = NEW.user2;
+        SET NEW.user2 = @temp;
+    END IF;
+END$$
+
+DELIMITER ;
